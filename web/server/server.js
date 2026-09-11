@@ -2,29 +2,46 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
-
-try {
-    require('dotenv').config({ path: path.join(__dirname, '../../.env') });
-} catch (_) {
-    // dotenv optional; process.env still works if set by the shell
-}
+const fs = require('fs');
 
 const app = express();
-const PORT = Number(process.env.NODE_PORT || process.env.PORT || 3001);
+const ROOT = path.resolve(__dirname, '..', '..');
+const PORT = Number(process.env.NODE_PORT || 3001);
 
-// ============================================================
-// API CONFIGURATION (from environment / .env — never hardcode keys)
-// ============================================================
+function loadDotEnv(filePath) {
+    if (!fs.existsSync(filePath)) return;
+    const text = fs.readFileSync(filePath, 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) continue;
+        const i = t.indexOf('=');
+        if (i < 0) continue;
+        const key = t.slice(0, i).trim();
+        let val = t.slice(i + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+        }
+        if (!process.env[key]) process.env[key] = val;
+    }
+}
+loadDotEnv(path.join(ROOT, '.env'));
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const OPENROUTER_ENDPOINT = process.env.OPENROUTER_ENDPOINT || 'https://openrouter.ai/api/v1/chat/completions';
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
+function getLlmConfig() {
+    let apiKey = process.env.OPENROUTER_API_KEY || '';
+    let model = process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
+    const runtimePath = path.join(ROOT, 'configs', 'llm_runtime.json');
+    try {
+        if (fs.existsSync(runtimePath)) {
+            const cfg = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+            if (cfg.api_key) apiKey = cfg.api_key;
+            if (cfg.model) model = cfg.model;
+        }
+    } catch (_) { /* ignore */ }
+    return { apiKey, model };
+}
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
-const GROQ_ENDPOINT = process.env.GROQ_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.1-70b-versatile';
-
-const PYTHON_API = process.env.PYTHON_API || 'http://localhost:8000';
+const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+const PYTHON_API = process.env.PYTHON_API || 'http://127.0.0.1:8000';
 
 // ============================================================
 // MIDDLEWARE
@@ -42,11 +59,15 @@ app.use(express.static(path.join(__dirname, '../public')));
  * Call OpenRouter API for AI response
  */
 async function callOpenRouter(messages, temperature = 0.7, maxTokens = 2048) {
+    const { apiKey, model } = getLlmConfig();
+    if (!apiKey) {
+        return { success: false, error: 'OPENROUTER_API_KEY not set' };
+    }
     try {
         const response = await axios.post(
             OPENROUTER_ENDPOINT,
             {
-                model: OPENROUTER_MODEL,
+                model,
                 messages: messages,
                 temperature: temperature,
                 max_tokens: maxTokens,
@@ -55,7 +76,7 @@ async function callOpenRouter(messages, temperature = 0.7, maxTokens = 2048) {
             },
             {
                 headers: {
-                    'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                    'Authorization': `Bearer ${apiKey}`,
                     'Content-Type': 'application/json',
                     'HTTP-Referer': 'http://localhost:3001',
                     'X-Title': 'SecureAI Chatbot'
@@ -71,7 +92,7 @@ async function callOpenRouter(messages, temperature = 0.7, maxTokens = 2048) {
             model: response.data.model
         };
     } catch (error) {
-        console.error('❌ OpenRouter Error:', error.response?.data || error.message);
+        console.error('OpenRouter Error:', error.response?.data || error.message);
         return {
             success: false,
             error: error.response?.data?.error?.message || error.message
@@ -80,70 +101,21 @@ async function callOpenRouter(messages, temperature = 0.7, maxTokens = 2048) {
 }
 
 /**
- * Call Groq API as fallback
- */
-async function callGroq(messages, temperature = 0.7, maxTokens = 2048) {
-    try {
-        const response = await axios.post(
-            GROQ_ENDPOINT,
-            {
-                model: GROQ_MODEL,
-                messages: messages,
-                temperature: temperature,
-                max_tokens: maxTokens,
-                top_p: 0.95,
-                stream: false
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${GROQ_API_KEY}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 30000
-            }
-        );
-
-        return {
-            success: true,
-            text: response.data.choices[0].message.content,
-            usage: response.data.usage,
-            model: response.data.model
-        };
-    } catch (error) {
-        console.error('❌ Groq Error:', error.response?.data || error.message);
-        return {
-            success: false,
-            error: error.response?.data?.error?.message || error.message
-        };
-    }
-}
-
-/**
- * Get AI response with fallback (OpenRouter → Groq)
+ * Get AI response via OpenRouter
  */
 async function getAIResponse(messages, prompt, history = []) {
-    // Try OpenRouter first
-    console.log(`🤖 Calling OpenRouter (${OPENROUTER_MODEL})...`);
+    const { model } = getLlmConfig();
+    console.log(`Calling OpenRouter (${model})...`);
     const openrouterResult = await callOpenRouter(messages);
-    
+
     if (openrouterResult.success) {
-        console.log('✅ OpenRouter response received');
+        console.log('OpenRouter response received');
         return openrouterResult;
     }
-    
-    console.log('⚠️ OpenRouter failed, falling back to Groq...');
-    
-    // Fallback to Groq
-    const groqResult = await callGroq(messages);
-    
-    if (groqResult.success) {
-        console.log('✅ Groq response received (fallback)');
-        return groqResult;
-    }
-    
+
     return {
         success: false,
-        error: 'All AI services failed'
+        error: openrouterResult.error || 'OpenRouter request failed'
     };
 }
 
@@ -158,7 +130,7 @@ app.post('/api/chat', async (req, res) => {
         return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    console.log(`\n📝 User: ${prompt}`);
+    console.log(`\nUser: ${prompt}`);
     console.log(`   Is follow-up: ${is_followup}`);
     console.log(`   Safe suggestion: ${safe_suggestion || 'None'}`);
 
@@ -166,7 +138,7 @@ app.post('/api/chat', async (req, res) => {
         // ============================================================
         // STEP 1: Check with Python API
         // ============================================================
-        console.log('🔍 Checking with Python API...');
+        console.log('Checking with Python API...');
         
         const detectResponse = await axios.post(`${PYTHON_API}/detect-conversational`, {
             prompt: prompt,
@@ -184,7 +156,7 @@ app.post('/api/chat', async (req, res) => {
         // STEP 2: If malicious, block and show safe suggestion
         // ============================================================
         if (data.type === 'blocked') {
-            console.log('⚠️ MALICIOUS PROMPT DETECTED!');
+            console.log('MALICIOUS PROMPT DETECTED');
             
             const suggestion = (data.suggestion || "").trim();
             const humanResponse = (data.response && String(data.response).trim())
@@ -269,7 +241,7 @@ Please respond naturally to the user's response. If they accepted the safe alter
         // STEP 4: If safe, forward to AI
         // ============================================================
         if (data.type === 'safe') {
-            console.log('✅ Prompt is safe, sending to OpenRouter...');
+            console.log('Prompt is safe, sending to OpenRouter...');
 
             // Build messages with history
             const messages = [
@@ -327,7 +299,7 @@ Please respond naturally to the user's response. If they accepted the safe alter
         });
 
     } catch (error) {
-        console.error('❌ Error:', error.message);
+        console.error('Error:', error.message);
         if (error.response) {
             console.error('   Response data:', error.response.data);
         }
@@ -336,7 +308,7 @@ Please respond naturally to the user's response. If they accepted the safe alter
         // STEP 6: Fallback - Direct to AI if Python API is down
         // ============================================================
         if (error.code === 'ECONNREFUSED') {
-            console.log('⚠️ Python API not running, forwarding directly to OpenRouter...');
+            console.log('Python API not running, forwarding directly to OpenRouter...');
             
             try {
                 const messages = [
@@ -387,7 +359,7 @@ app.post('/api/chat-conversational', async (req, res) => {
         return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    console.log(`\n📝 Conversational: ${prompt}`);
+    console.log(`\nConversational: ${prompt}`);
     console.log(`   Safe suggestion: ${safe_suggestion || 'None'}`);
 
     try {
@@ -469,7 +441,7 @@ app.post('/api/chat-conversational', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ Error:', error.message);
+        console.error('Error:', error.message);
         return res.json({
             type: 'success',
             is_malicious: false,
@@ -484,45 +456,54 @@ app.post('/api/chat-conversational', async (req, res) => {
 
 app.get('/api/health', async (req, res) => {
     try {
-        const response = await axios.get(`${PYTHON_API}/health`);
-        
-        // Check OpenRouter API availability
-        let openrouter_status = 'unknown';
+        const response = await axios.get(`${PYTHON_API}/health`, { timeout: 5000 });
+
+        // LLM status: key/model configured locally (do not hard-fail health on a live ping)
+        let openrouter_status = 'unavailable';
         try {
-            const testResponse = await axios.post(
-                OPENROUTER_ENDPOINT,
-                {
-                    model: OPENROUTER_MODEL,
-                    messages: [{ role: 'user', content: 'Hello' }],
-                    max_tokens: 5
-                },
-                {
-                    headers: {
-                        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                        'Content-Type': 'application/json',
-                        'HTTP-Referer': 'http://localhost:3001',
-                        'X-Title': 'SecureAI Chatbot'
-                    },
-                    timeout: 5000
+            const { apiKey, model } = getLlmConfig();
+            if (apiKey && model) {
+                openrouter_status = 'available';
+                // Soft live check — ignore failures (quota/network); key is still configured
+                try {
+                    await axios.post(
+                        OPENROUTER_ENDPOINT,
+                        {
+                            model,
+                            messages: [{ role: 'user', content: 'ping' }],
+                            max_tokens: 1
+                        },
+                        {
+                            headers: {
+                                'Authorization': `Bearer ${apiKey}`,
+                                'Content-Type': 'application/json',
+                                'HTTP-Referer': 'http://localhost:3001',
+                                'X-Title': 'SecureAI Chatbot'
+                            },
+                            timeout: 4000
+                        }
+                    );
+                } catch (_) {
+                    // keep available if credentials exist; chat will surface real errors
                 }
-            );
-            openrouter_status = testResponse.status === 200 ? 'available' : 'error';
-        } catch (e) {
+            }
+        } catch (_) {
             openrouter_status = 'unavailable';
         }
-        
+
         return res.json({
             status: 'healthy',
             pipeline_loaded: response.data.pipeline_loaded,
-            openrouter_status: openrouter_status,
-            groq_status: 'available' // Fallback
+            openrouter_status,
+            gemini_status: openrouter_status, // backward compat for older UI
+            llm_provider: 'openrouter'
         });
     } catch (error) {
         return res.json({
             status: 'degraded',
             pipeline_loaded: false,
             openrouter_status: 'unavailable',
-            groq_status: 'unknown'
+            gemini_status: 'unavailable'
         });
     }
 });
@@ -532,15 +513,15 @@ app.get('/api/health', async (req, res) => {
 // ============================================================
 
 app.listen(PORT, () => {
+    const { apiKey, model } = getLlmConfig();
     console.log('='.repeat(60));
-    console.log('🚀 AI CHATBOT DASHBOARD');
+    console.log('AI CHATBOT DASHBOARD');
     console.log('='.repeat(60));
-    console.log(`📡 Server: http://localhost:${PORT}`);
-    console.log(`🔗 Python API: ${PYTHON_API}`);
-    console.log(`🤖 OpenRouter Model: ${OPENROUTER_MODEL}`);
-    console.log(`🔑 OpenRouter API Key: ${OPENROUTER_API_KEY ? '✅ Set' : '❌ Missing'}`);
-    console.log(`🔄 Fallback: Groq (${GROQ_MODEL})`);
+    console.log(`Server: http://localhost:${PORT}`);
+    console.log(`Python API: ${PYTHON_API}`);
+    console.log(`OpenRouter Model: ${model}`);
+    console.log(`OpenRouter API Key: ${apiKey ? 'Set' : 'Missing'}`);
     console.log('='.repeat(60));
-    console.log('\n⚠️ Make sure Python API is running: python run_api.py');
+    console.log('\nMake sure Python API is running: python run_api.py');
     console.log('='.repeat(60));
 });

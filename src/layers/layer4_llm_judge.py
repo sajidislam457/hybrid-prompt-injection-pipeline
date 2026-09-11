@@ -40,12 +40,14 @@ class Layer4LLMJudge:
         timeout_sec: float = 12.0,
         max_calls_per_minute: int = 20,
         model: Optional[str] = None,
+        heuristic_block_threshold: float = 0.72,
     ):
         self.use_real_llm = use_real_llm
         self.enabled = enabled
         self.timeout_sec = timeout_sec
         self.max_calls_per_minute = max_calls_per_minute
         self.model = model or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+        self.heuristic_block_threshold = float(heuristic_block_threshold)
         self._call_timestamps: List[float] = []
 
     def analyze(self, text: str, layer3_result, context: Optional[Dict] = None) -> Layer4Result:
@@ -154,6 +156,7 @@ class Layer4LLMJudge:
     def _analyze_heuristic(self, text: str, layer3_result, context: Dict) -> Layer4Result:
         categories = self._detect_all_categories(text)
         base = float(getattr(layer3_result, "weighted_risk_score", 0.5) or 0.5)
+        ensemble_risk = base
 
         t2b = context.get("layer2b") or {}
         retrieval = context.get("retrieval") or {}
@@ -162,25 +165,37 @@ class Layer4LLMJudge:
         if retrieval.get("hit"):
             base = min(1.0, base + 0.15 * float(retrieval.get("score", 0.0)))
 
+        # Small bumps only for strong injection families (not everyday English).
         for category in categories:
             base += {
-                "tool_injection": 0.12,
-                "system_extraction": 0.1,
-                "data_extraction": 0.1,
-                "obfuscation": 0.1,
-                "jailbreak": 0.12,
-                "story_based": 0.1,
-                "story_jailbreak": 0.1,
-                "indirect_injection": 0.08,
+                "tool_injection": 0.08,
+                "system_extraction": 0.08,
+                "jailbreak": 0.1,
+                "story_jailbreak": 0.08,
+                "direct_override": 0.08,
+                "obfuscation": 0.06,
             }.get(category, 0.0)
 
         # Reduce false positives on benign lookalikes
         lower = (text or "").lower()
-        if any(x in lower for x in ("forget password", "ignore previous email", "system design")):
-            base = min(base, 0.25)
+        if any(
+            x in lower
+            for x in (
+                "forget password",
+                "ignore previous email",
+                "system design",
+                "please help",
+                "first step",
+                "http://",
+                "https://",
+            )
+        ) and ensemble_risk < 0.55:
+            base = min(base, 0.35)
 
         risk = min(base, 1.0)
-        is_mal = risk > 0.45
+        thr = self.heuristic_block_threshold
+        # Pure scorer: the pipeline decides whether this verdict may block or allow.
+        is_mal = risk > thr
         pattern = categories[0] if categories else "unknown"
         reasoning = [
             "Heuristic ambiguous-case judge",
@@ -188,6 +203,7 @@ class Layer4LLMJudge:
             f"Categories={', '.join(categories)}",
             f"Transformer risk={t2b.get('risk_score')}",
             f"Retrieval hit={retrieval.get('hit')} score={retrieval.get('score')}",
+            f"Threshold={thr}",
             f"Verdict={'MALICIOUS' if is_mal else 'BENIGN'}",
         ]
         return Layer4Result(
@@ -208,19 +224,24 @@ class Layer4LLMJudge:
 
     def _detect_all_categories(self, text: str) -> List[str]:
         text_lower = (text or "").lower()
+        # High-precision phrases only — single words like "please"/"first"/"extract" caused FPs.
         category_check = {
-            "direct_override": ["ignore", "forget", "bypass", "override", "disable"],
-            "obfuscation": ["base64", "encoded", "hex", "rot13", "decode"],
-            "role_impersonation": ["act as", "pretend", "role-play", "you are now"],
-            "emotional_manipulation": ["please", "desperate", "trust me"],
-            "indirect_injection": ["http://", "https://", "www."],
-            "context_tampering": ["from now on", "remember that", "conversation history"],
-            "system_extraction": ["system prompt", "configuration", "internal rules"],
-            "data_extraction": ["extract", "reveal", "expose", "leak"],
-            "tool_injection": ["execute", "shell", "api call", "run command"],
-            "multi_turn": ["first", "then", "step by step", "gradually"],
-            "story_jailbreak": ["firewalls", "logs are wiped", "protocols"],
-            "jailbreak": ["jailbreak", "dan", "developer mode", "no restrictions"],
+            "direct_override": [
+                "ignore previous",
+                "ignore all",
+                "forget all",
+                "bypass safety",
+                "override instructions",
+                "disregard previous",
+            ],
+            "obfuscation": ["base64", "rot13", "decode this"],
+            "role_impersonation": ["act as", "pretend you are", "you are now dan", "role-play as"],
+            "context_tampering": ["from now on you", "ignore your system", "new system prompt"],
+            "system_extraction": ["system prompt", "hidden instructions", "internal rules"],
+            "data_extraction": ["reveal your secrets", "expose the system", "leak the prompt"],
+            "tool_injection": ["run command", "execute shell", "api call to"],
+            "story_jailbreak": ["logs are wiped", "developer mode enabled"],
+            "jailbreak": ["jailbreak", "developer mode", "no restrictions", "do anything now"],
         }
         detected = []
         for category, keywords in category_check.items():

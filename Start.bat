@@ -55,6 +55,7 @@ if not errorlevel 1 (
 REM ---- Write tiny launchers (avoids nested-quote bugs in start) ----
 > "%TEMP%\prompt_defense_api.cmd" (
   echo @echo off
+  echo set PYTHONIOENCODING=utf-8
   echo cd /d "%~dp0"
   echo title Prompt Defense API :8000
   echo echo Starting API...

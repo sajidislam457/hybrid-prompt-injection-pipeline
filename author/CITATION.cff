@@ -1,0 +1,23 @@
+﻿cff-version: 1.2.0
+title: "A Hybrid Lexical–Semantic Pipeline for Prompt-Injection Detection with Intent-Preserving Mitigation"
+message: "If you use this software or ideas from this repository, please cite it as below."
+type: software
+authors:
+  - family-names: "Arefin"
+    given-names: "Shams-ul"
+    alias: "arefin95f"
+    website: "https://github.com/arefin95f"
+repository-code: "https://github.com/arefin95f/Prompt-Attack-Monitoring-and-Controlling"
+url: "https://github.com/arefin95f/Prompt-Attack-Monitoring-and-Controlling"
+license: MIT
+version: "4.0.0"
+abstract: >
+  Research prototype of a gated multi-layer prompt-injection defense combining
+  TF-IDF classical detectors, semantic upgrade, train-only retrieval, ambiguity
+  judging, and intent-preserving mitigation, with held-out and ablation evaluation.
+keywords:
+  - prompt-injection
+  - jailbreak-detection
+  - llm-security
+  - hybrid-nlp
+  - ablation-study

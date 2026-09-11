@@ -1,0 +1,5 @@
+{
+  "provider": "openrouter",
+  "model": "openai/gpt-4o-mini",
+  "updated_at": null
+}

@@ -1,0 +1,75 @@
+# Canonical attack taxonomy for SecureAI Admin (Lab dropdown + ingest).
+# Edit `aliases` when a new external dataset uses different category names.
+
+canonical:
+  - unknown
+  - system_extraction
+  - data_extraction
+  - tool_injection
+  - jailbreak
+  - story_jailbreak
+  - direct_override
+  - direct_injection
+  - context_tampering
+  - multi_turn
+  - obfuscation
+  - emotional_manipulation
+  - role_impersonation
+  - indirect_injection
+
+# external / legacy label → canonical (keys are normalized: lower, non-alnum → _)
+aliases:
+  # pass-through / near-duplicates
+  context_poisoning: context_tampering
+  context_confusion: context_tampering
+  context_manipulation: context_tampering
+  context_overflow: context_tampering
+
+  # cyberec / neuralchemy-style
+  persona_replacement: role_impersonation
+  instruction_override: direct_override
+  encoding: obfuscation
+  encoding_obfuscation: obfuscation
+  token_smuggling: obfuscation
+  token_injection: obfuscation
+  prompt_extraction: system_extraction
+  prompt_leaking: system_extraction
+  prompt_leak: system_extraction
+  training_extraction: system_extraction
+  system_manipulation: system_extraction
+  crescendo: multi_turn
+  many_shot: multi_turn
+  chain_of_thought: multi_turn
+  rag_poisoning: indirect_injection
+  code_execution: tool_injection
+  payload_injection: tool_injection
+  agent_manipulation: tool_injection
+  adversarial: jailbreak
+  prompt_injection: direct_injection
+  output_manipulation: direct_injection
+  response_manipulation: direct_injection
+  model_fingerprinting: system_extraction
+  edge_case: unknown
+  control: unknown
+  benign: unknown  # benign rows should be label=0; category unused
+
+  # S-Labs / descriptive phrases (if ever present as strings)
+  instruction_override_attack: direct_override
+  role_confusion: role_impersonation
+  prompt_extraction_attack: system_extraction
+  social_engineering: emotional_manipulation
+  technical_injection: tool_injection
+  embedded_attack: direct_injection
+  hypothetical_framing: story_jailbreak
+  urgency_emergency: emotional_manipulation
+
+  # common alternates
+  story: story_jailbreak
+  roleplay: role_impersonation
+  role_play: role_impersonation
+  override: direct_override
+  injection: direct_injection
+  obfuscated: obfuscation
+  emotional: emotional_manipulation
+  multi-turn: multi_turn
+  multiturn: multi_turn

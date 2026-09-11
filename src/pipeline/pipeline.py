@@ -2,6 +2,7 @@
 ULTIMATE PIPELINE - COMPLETE 500+ PATTERN DETECTION
 """
 
+import os
 import time
 import logging
 import re
@@ -73,25 +74,66 @@ class PromptInjectionPipeline:
 
         self.layer1 = Layer1Prefilter()
         self.layer2 = Layer2Classifier(model_dir)
+        # Held-out/ablation workers set LAYER2B_DEVICE (cuda/cpu). Live API stays
+        # on config (default cpu) so the 4GB GPU is free for long eval jobs.
+        layer2b_device = (
+            os.environ.get("LAYER2B_DEVICE")
+            or layer2b_cfg.get("device")
+            or "cpu"
+        )
         self.layer2b = Layer2BTransformer(
             enabled=self.flags["phase2"] and bool(layer2b_cfg.get("enabled", True)),
             model_name=layer2b_cfg.get("model_name", "protectai/deberta-v3-base-prompt-injection-v2"),
-            threshold=float(layer2b_cfg.get("threshold", 0.55)),
+            threshold=float(layer2b_cfg.get("threshold", 0.78)),
             use_transformers=bool(layer2b_cfg.get("use_transformers", False)),
+            device=str(layer2b_device),
         )
-        self.layer2b_gate_confidence_below = float(layer2b_cfg.get("gate_confidence_below", 0.75))
+        self.layer2b_gate_confidence_below = float(layer2b_cfg.get("gate_confidence_below", 0.40))
         self.layer2b_run_on_ambiguous = bool(layer2b_cfg.get("run_on_ambiguous", True))
+        self.layer2b_override_min_risk = float(layer2b_cfg.get("override_min_risk", 1.01))
+        self.layer2b_enable_force_block = bool(layer2b_cfg.get("enable_force_block", False))
+        self.layer2b_soft_merge = float(layer2b_cfg.get("soft_merge", 0.85))
+        self.layer2b_soft_merge_only_ambiguous = bool(
+            layer2b_cfg.get("soft_merge_only_ambiguous", True)
+        )
 
-        self.layer3 = Layer3Ensemble()
+        self.layer3 = Layer3Ensemble(
+            model_weights=(layers.get("layer3") or {}).get("weights"),
+            ambiguous_confidence_below=float(
+                (layers.get("layer3") or {}).get("ambiguous_confidence_below", 0.45)
+            ),
+            ambiguous_agreement_below=float(
+                (layers.get("layer3") or {}).get("ambiguous_agreement_below", 0.45)
+            ),
+            decision_threshold=float(
+                (layers.get("layer3") or {}).get("decision_threshold", 0.52)
+            ),
+            category_boost_scale=float(
+                (layers.get("layer3") or {}).get("category_boost_scale", 0.25)
+            ),
+            category_boost_min_risk=float(
+                (layers.get("layer3") or {}).get("category_boost_min_risk", 0.45)
+            ),
+        )
         self.layer4 = Layer4LLMJudge(
             use_real_llm=bool(layer4_cfg.get("use_real_llm", use_llm)),
             enabled=self.flags["phase3"] and bool(layer4_cfg.get("enabled", True)),
             timeout_sec=float(layer4_cfg.get("timeout_sec", 12)),
             max_calls_per_minute=int(layer4_cfg.get("max_calls_per_minute", 20)),
             model=layer4_cfg.get("model"),
+            heuristic_block_threshold=float(layer4_cfg.get("heuristic_block_threshold", 0.75)),
         )
         self.layer4_ambiguous_only = bool(layer4_cfg.get("ambiguous_only", True))
-        self.layer4_min_confidence_for_skip = float(layer4_cfg.get("min_confidence_for_skip", 0.8))
+        self.layer4_min_confidence_for_skip = float(layer4_cfg.get("min_confidence_for_skip", 0.40))
+        self.layer4_require_ensemble_corroboration = bool(
+            layer4_cfg.get("require_ensemble_corroboration", True)
+        )
+        self.layer4_type_force_block = bool(layer4_cfg.get("type_force_block", False))
+        layer3_cfg = layers.get("layer3") or {}
+        # Precision gate: drop weak ensemble blocks that lack agreement / high risk.
+        self.layer3_block_min_risk = float(layer3_cfg.get("block_min_risk", 0.58))
+        self.layer3_block_min_agreement = float(layer3_cfg.get("block_min_agreement", 0.65))
+        self.layer3_strong_risk = float(layer3_cfg.get("strong_risk", 0.75))
 
         self.layer5 = NaturalConversationalGenerator(
             intent_preserving=bool(layer5_cfg.get("intent_preserving", True)),
@@ -108,14 +150,25 @@ class PromptInjectionPipeline:
             top_k=int(retrieval_cfg.get("top_k", 3)),
             enabled=self.flags["phase4"] and bool(retrieval_cfg.get("enabled", True)),
         )
+        self.retrieval_force_block_score = float(retrieval_cfg.get("force_block_score", 0.85))
         self.decision_logger = DecisionLogger(
             log_path=logging_cfg.get("decisions_file", "logs/decisions.jsonl"),
             enabled=self.flags["phase5"],
         )
         self.attack_typer = AttackTypeDetector(min_score=1.8)
         self.is_ready = False
+        self._team_overrides: Dict[str, Dict[str, Any]] = {}
+        # Bulk accuracy jobs set ACCURACY_DISABLE_DECISION_LOG=1 — keep per-sample
+        # prints off or a 40k held-out run writes multi-GB worker logs.
+        _quiet = os.environ.get("ACCURACY_DISABLE_DECISION_LOG", "").strip().lower()
+        self.verbose = _quiet not in {"1", "true", "yes"}
+        self._reload_team_overrides()
         self._compile_patterns()
         self._ablation_mode = "full"
+
+    def _vprint(self, *args: Any, **kwargs: Any) -> None:
+        if self.verbose:
+            print(*args, **kwargs)
 
     def apply_ablation(self, mode: str = "full") -> None:
         """
@@ -437,7 +490,7 @@ class PromptInjectionPipeline:
             (self.indirect_patterns, "indirect_injection"),
         ]
         
-        print(f"✅ Compiled {sum(len(p[0]) for p in self.all_patterns)} attack patterns")
+        self._vprint(f"[ok] Compiled {sum(len(p[0]) for p in self.all_patterns)} attack patterns")
         # Precompile for hybrid pattern-bank matching (Layer1-style lexical + type)
         self._pattern_bank_re: List[Tuple[re.Pattern, str, str]] = []
         for pattern_list, attack_type in self.all_patterns:
@@ -451,7 +504,7 @@ class PromptInjectionPipeline:
                     )
                 except re.error:
                     continue
-        print(f"✅ Hybrid pattern-bank ready: {len(self._pattern_bank_re)} compiled rules")
+        self._vprint(f"[ok] Hybrid pattern-bank ready: {len(self._pattern_bank_re)} compiled rules")
 
     _EDU_FRAMING = re.compile(
         r"(?i)\b(explain|what is|what are|what does|how do|how does|how can|teach|describe|"
@@ -507,27 +560,49 @@ class PromptInjectionPipeline:
     def load_models(self) -> bool:
         try:
             self.layer2.load()
+            self._reload_team_overrides()
+            if getattr(self, "retriever", None):
+                try:
+                    self.retriever._build()
+                except Exception:
+                    logger.warning("attack bank rebuild during load_models failed", exc_info=True)
             self.is_ready = True
-            logger.info("✅ Pipeline ready!")
+            logger.info("Pipeline ready!")
             return True
         except Exception as e:
-            logger.error(f"❌ Failed to load models: {e}")
+            logger.error("Failed to load models: %s", e)
             self.is_ready = False
             return False
+
+    def _reload_team_overrides(self) -> None:
+        try:
+            from src.utils.team_overrides import load_map
+            self._team_overrides = load_map()
+        except Exception:
+            logger.warning("team overrides reload failed", exc_info=True)
+            self._team_overrides = {}
+
+    def _team_exact(self, *texts: str) -> Optional[Dict[str, Any]]:
+        from src.utils.team_overrides import match
+        for t in texts:
+            hit = match(t)
+            if hit:
+                return hit
+        return None
     
     def _detect_attack_type(self, text: str) -> str:
         """Score-based attack typing (avoids first-match false labels)."""
         result = self.attack_typer.detect(text)
         attack_type = result["attack_type"]
-        print(f"\nDETECTING: '{(text or '')[:80]}...'")
-        print("-" * 50)
+        self._vprint(f"\nDETECTING: '{(text or '')[:80]}...'")
+        self._vprint("-" * 50)
         if attack_type != "unknown":
-            print(f"   HIT {attack_type.upper()} score={result['score']:.1f} name={result['display_name']}")
+            self._vprint(f"   HIT {attack_type.upper()} score={result['score']:.1f} name={result['display_name']}")
             if result.get("hits"):
                 for k, vals in list(result["hits"].items())[:2]:
-                    print(f"      {k}: {vals[:2]}")
+                    self._vprint(f"      {k}: {vals[:2]}")
         else:
-            print("   UNKNOWN (no strong match)")
+            self._vprint("   UNKNOWN (no strong match)")
         return attack_type
 
     def _resolve_attack_type(self, text: str, layer2_result: Dict, layer2b_result: Dict, retrieval: Dict) -> Dict:
@@ -570,12 +645,42 @@ class PromptInjectionPipeline:
             "categories": categories or ["unknown"],
             "source": "none",
         }
-    
-    def process(self, text: str) -> PipelineResult:
+
+    def _should_run_2b(self, layer3_result: Layer3Result, retrieval: Dict) -> bool:
+        if not self.layer2b.enabled:
+            return False
+        if self.layer2b_run_on_ambiguous and layer3_result.is_ambiguous:
+            return True
+        if layer3_result.confidence < self.layer2b_gate_confidence_below:
+            return True
+        if retrieval.get("hit"):
+            return True
+        return False
+
+    def _slice_layer2(self, batch: Dict, i: int) -> Dict:
+        individual = {}
+        for name, risks in (batch.get("individual_risks") or {}).items():
+            if isinstance(risks, list) and i < len(risks):
+                individual[name] = [risks[i]]
+        preds = batch.get("predictions") or []
+        scores = batch.get("risk_scores") or []
+        probs = batch.get("probabilities") or []
+        types = batch.get("attack_types") or []
+        cats = batch.get("attack_categories") or []
+        return {
+            "predictions": [preds[i]] if i < len(preds) else [0],
+            "risk_scores": [scores[i]] if i < len(scores) else [0.0],
+            "probabilities": [probs[i]] if i < len(probs) else [[0.5, 0.5]],
+            "individual_risks": individual,
+            "attack_types": [types[i]] if i < len(types) else ["unknown"],
+            "attack_categories": [cats[i]] if i < len(cats) else [["unknown"]],
+            "num_models": batch.get("num_models", 0),
+        }
+
+    def _prepare(self, text: str, layer2_result: Optional[Dict] = None) -> Dict[str, Any]:
         start_time = time.time()
         timings: Dict[str, float] = {}
 
-        # Phase 4: normalize obfuscation / encodings
         norm_start = time.time()
         if self.normalizer_enabled:
             normalization = self.normalizer.normalize(text)
@@ -585,81 +690,118 @@ class PromptInjectionPipeline:
             analysis_text = text
         timings["normalize"] = time.time() - norm_start
 
-        # LAYER 1
+        team_hit = self._team_exact(text, analysis_text)
+
         layer1_start = time.time()
         layer1_result = self.layer1.process(analysis_text)
         timings["layer1"] = time.time() - layer1_start
 
-        # LAYER 2 classical
-        layer2_result = None
-        if self.is_ready:
-            layer2_start = time.time()
-            try:
-                layer2_result = self.layer2.predict([analysis_text])
-                timings["layer2"] = time.time() - layer2_start
-            except Exception as e:
-                logger.error(f"Layer 2 failed: {e}")
+        if layer2_result is None:
+            if self.is_ready:
+                layer2_start = time.time()
+                try:
+                    layer2_result = self.layer2.predict([analysis_text])
+                    timings["layer2"] = time.time() - layer2_start
+                except Exception as e:
+                    logger.error(f"Layer 2 failed: {e}")
+                    layer2_result = self._empty_layer2_result()
+                    timings["layer2"] = time.time() - layer2_start
+            else:
                 layer2_result = self._empty_layer2_result()
-                timings["layer2"] = time.time() - layer2_start
-        else:
-            layer2_result = self._empty_layer2_result()
-            timings["layer2"] = 0
+                timings["layer2"] = 0
 
-        # LAYER 3 ensemble
         layer3_start = time.time()
         layer3_result = self.layer3.fuse(layer2_result)
         timings["layer3"] = time.time() - layer3_start
 
-        # Phase 4: attack retrieval
         retrieval_start = time.time()
         retrieval = self.retriever.query(analysis_text) if self.retriever.enabled else {
             "enabled": False, "hit": False, "score": 0.0, "attack_type": "unknown", "matches": []
         }
         timings["retrieval"] = time.time() - retrieval_start
 
-        # Phase 2: transformer / semantic detector (gated)
-        layer2b_result = Layer2BTransformer._empty()
-        should_run_2b = False
-        if self.layer2b.enabled:
-            if self.layer2b_run_on_ambiguous and layer3_result.is_ambiguous:
-                should_run_2b = True
-            if layer3_result.confidence < self.layer2b_gate_confidence_below:
-                should_run_2b = True
-            if retrieval.get("hit"):
-                should_run_2b = True
-        if should_run_2b:
-            t2b_start = time.time()
-            try:
-                layer2b_result = self.layer2b.predict(analysis_text)
-            except Exception as e:
-                logger.error(f"Layer 2B failed: {e}")
-                layer2b_result = Layer2BTransformer._empty()
-            timings["layer2b"] = time.time() - t2b_start
-        else:
-            timings["layer2b"] = 0
+        should_run_2b = self._should_run_2b(layer3_result, retrieval)
+        return {
+            "text": text,
+            "start_time": start_time,
+            "timings": timings,
+            "normalization": normalization,
+            "analysis_text": analysis_text,
+            "team_hit": team_hit,
+            "layer1_result": layer1_result,
+            "layer2_result": layer2_result,
+            "layer3_result": layer3_result,
+            "retrieval": retrieval,
+            "should_run_2b": should_run_2b,
+        }
 
-        # Blend classical + semantic + retrieval risk
+    def _complete(self, prep: Dict[str, Any], layer2b_result: Dict) -> PipelineResult:
+        text = prep["text"]
+        analysis_text = prep["analysis_text"]
+        timings = prep["timings"]
+        layer1_result = prep["layer1_result"]
+        layer2_result = prep["layer2_result"]
+        layer3_result = prep["layer3_result"]
+        retrieval = prep["retrieval"]
+        normalization = prep["normalization"]
+        team_hit = prep["team_hit"]
+        should_run_2b = prep["should_run_2b"]
+        start_time = prep["start_time"]
+
         final_risk_score = float(layer3_result.weighted_risk_score or 0.0)
         final_is_malicious = bool(layer3_result.final_classification)
         decision_source = "layer3_ensemble"
+        layer2b_forced_block = False
 
         if layer2b_result.get("enabled") and should_run_2b:
             t_risk = float(layer2b_result.get("risk_score", 0.0))
-            final_risk_score = max(final_risk_score, t_risk * 0.95)
-            if layer2b_result.get("is_malicious"):
-                final_is_malicious = True
-                decision_source = "layer2b_transformer"
+            # Soft evidence: only blend into the score when Layer 3 is unsure, so a
+            # confident classical ALLOW is not inflated toward the cut for AUC alone.
+            merge = self.layer2b_soft_merge
+            if (not self.layer2b_soft_merge_only_ambiguous) or bool(layer3_result.is_ambiguous):
+                final_risk_score = max(final_risk_score, t_risk * merge)
+            # Layer 2b is a rare semantic catch, not a co-equal voter. It may only
+            # flip ALLOW→BLOCK when Layer 3 is unsure AND risk is high. If Layer 3
+            # already blocked, keep decision_source = layer3_ensemble (do not steal).
+            if (
+                self.layer2b_enable_force_block
+                and layer2b_result.get("is_malicious")
+                and not final_is_malicious
+            ):
+                l3_unsure = bool(layer3_result.is_ambiguous) or (
+                    float(layer3_result.confidence or 0.0) < self.layer2b_gate_confidence_below
+                )
+                if l3_unsure and t_risk >= self.layer2b_override_min_risk:
+                    final_is_malicious = True
+                    decision_source = "layer2b_transformer"
+                    layer2b_forced_block = True
 
+        # Similarity is evidence, not proof: the bank can hold noisy entries, so only a
+        # near-duplicate blocks on its own. A looser match raises risk and needs a
+        # second opinion from Layer 3 or a real Layer 2b override before it can block.
+        retrieval_near_duplicate = False
         if retrieval.get("hit"):
-            final_risk_score = min(1.0, max(final_risk_score, 0.55 + 0.4 * float(retrieval.get("score", 0))))
-            final_is_malicious = True
-            if decision_source == "layer3_ensemble":
-                decision_source = "retrieval"
+            retrieval_score = float(retrieval.get("score") or 0.0)
+            final_risk_score = min(1.0, max(final_risk_score, 0.55 + 0.4 * retrieval_score))
+            retrieval_near_duplicate = retrieval_score >= self.retrieval_force_block_score
+            if (
+                retrieval_near_duplicate
+                or bool(layer3_result.final_classification)
+                or layer2b_forced_block
+            ):
+                final_is_malicious = True
+                if decision_source == "layer3_ensemble":
+                    decision_source = "retrieval"
 
-        # Phase 3: ambiguous LLM/heuristic judge
+        team_protected = bool(team_hit)
+        if not team_protected and retrieval.get("hit"):
+            best = (retrieval.get("matches") or [{}])[0]
+            if best.get("source") == "team_train":
+                team_protected = True
+
         layer4_result = None
         needs_judge = False
-        if self.layer4.enabled:
+        if self.layer4.enabled and not team_protected:
             if self.layer4_ambiguous_only:
                 needs_judge = bool(layer3_result.is_ambiguous) or (
                     layer3_result.confidence < self.layer4_min_confidence_for_skip
@@ -676,33 +818,98 @@ class PromptInjectionPipeline:
                     context={"layer2b": layer2b_result, "retrieval": retrieval},
                 )
                 timings["layer4"] = time.time() - layer4_start
-                final_is_malicious = layer4_result.is_malicious
-                final_risk_score = max(final_risk_score, float(layer4_result.risk_score))
-                decision_source = f"layer4_{layer4_result.source}"
+                # Layer 4 is the weakest signal. It may flip a borderline call, but must
+                # never veto retrieval / Layer 2b, and must not steal credit when the
+                # pre-L4 decision already matches its verdict.
+                l4_risk = float(layer4_result.risk_score)
+                strong_positive = retrieval_near_duplicate or layer2b_forced_block
+                corroborated = strong_positive or float(layer3_result.weighted_risk_score or 0.0) >= 0.45
+                pre_l4_mal = bool(final_is_malicious)
+
+                if layer4_result.is_malicious:
+                    if (corroborated or not self.layer4_require_ensemble_corroboration) and not pre_l4_mal:
+                        final_is_malicious = True
+                        final_risk_score = max(final_risk_score, l4_risk)
+                        decision_source = f"layer4_{layer4_result.source}"
+                    elif pre_l4_mal:
+                        final_risk_score = max(final_risk_score, l4_risk)
+                elif not strong_positive and pre_l4_mal:
+                    # Only claim the call when L4 actually relaxes a block.
+                    final_is_malicious = False
+                    final_risk_score = min(final_risk_score, l4_risk)
+                    decision_source = f"layer4_{layer4_result.source}"
             except Exception as e:
                 logger.error(f"Layer 4 failed: {e}")
                 timings["layer4"] = time.time() - layer4_start
         else:
             timings["layer4"] = 0
 
-        # Resolve attack type with scored detector (primary) + model signals
         typed = self._resolve_attack_type(analysis_text, layer2_result, layer2b_result, retrieval)
         if typed["attack_type"] == "unknown" and analysis_text != text:
             typed = self._resolve_attack_type(text, layer2_result, layer2b_result, retrieval)
+        if team_hit:
+            team_type = team_hit.get("attack_type") or "unknown"
+            typed = {
+                "attack_type": team_type,
+                "display_name": AttackTypeDetector.display_name(team_type),
+                "categories": [team_type],
+                "source": "team_train",
+            }
+        elif team_protected and retrieval.get("attack_type") and retrieval.get("attack_type") != "unknown":
+            ret_type = retrieval["attack_type"]
+            typed = {
+                "attack_type": ret_type,
+                "display_name": AttackTypeDetector.display_name(ret_type),
+                "categories": [ret_type],
+                "source": "team_train",
+            }
         attack_type = typed["attack_type"]
         attack_categories = typed.get("categories") or [attack_type]
         attack_display_name = typed.get("display_name") or attack_type
-        if attack_type != "unknown":
+        # Typing is metadata. Never force-block a safe ensemble decision from a tag alone
+        # (that path produced thousands of FPs). Optional legacy override via config.
+        if (
+            self.layer4_type_force_block
+            and attack_type != "unknown"
+            and not team_protected
+        ):
             final_is_malicious = True
             final_risk_score = max(final_risk_score, 0.75)
             if decision_source in {"layer3_ensemble"}:
                 decision_source = typed.get("source") or "pattern_score"
-            print(f"TYPE: {attack_display_name} ({attack_type}) via {typed.get('source')}")
+            self._vprint(f"TYPE: {attack_display_name} ({attack_type}) via {typed.get('source')}")
+        elif attack_type != "unknown":
+            self._vprint(f"TYPE(label-only): {attack_display_name} ({attack_type}) via {typed.get('source')}")
 
-        # Final action
-        if final_risk_score > 0.8 or (final_is_malicious and attack_type != "unknown"):
+        # Precision gate — weak classical blocks without corroboration were the remaining FPs.
+        # Strong risk, near-duplicate retrieval, Layer2b override, or team hits are exempt.
+        if (
+            final_is_malicious
+            and not team_protected
+            and not retrieval_near_duplicate
+            and not layer2b_forced_block
+        ):
+            agree = float(getattr(layer3_result, "agreement_score", 0.0) or 0.0)
+            if final_risk_score < self.layer3_block_min_risk:
+                final_is_malicious = False
+            elif (
+                final_risk_score < self.layer3_strong_risk
+                and agree < self.layer3_block_min_agreement
+            ):
+                final_is_malicious = False
+
+        if team_protected:
+            final_is_malicious = True
+            final_risk_score = max(final_risk_score, 0.95)
+            decision_source = "team_train"
             action = "BLOCK"
             severity = "critical"
+        elif final_is_malicious and final_risk_score > 0.8:
+            action = "BLOCK"
+            severity = "critical"
+        elif final_is_malicious:
+            action = "BLOCK"
+            severity = "high"
         elif final_risk_score > 0.5:
             action = "REVIEW"
             severity = "high"
@@ -716,9 +923,11 @@ class PromptInjectionPipeline:
 
         timings["total"] = time.time() - start_time
 
-        explanation = self._build_explanation(
-            layer1_result, layer2_result, layer3_result, layer4_result, layer2b_result, retrieval, normalization
-        )
+        explanation = {}
+        if self.verbose:
+            explanation = self._build_explanation(
+                layer1_result, layer2_result, layer3_result, layer4_result, layer2b_result, retrieval, normalization
+            )
 
         result = PipelineResult(
             layer1=layer1_result,
@@ -728,7 +937,7 @@ class PromptInjectionPipeline:
             layer4=layer4_result,
             retrieval=retrieval,
             normalization=normalization,
-            is_malicious=final_is_malicious or attack_type != "unknown",
+            is_malicious=bool(final_is_malicious),
             final_risk_score=final_risk_score,
             attack_type=attack_type,
             attack_display_name=attack_display_name,
@@ -742,7 +951,6 @@ class PromptInjectionPipeline:
             normalized_text=analysis_text,
         )
 
-        # Phase 5: decision log
         self.decision_logger.log(
             {
                 "prompt_preview": (text or "")[:180],
@@ -768,7 +976,133 @@ class PromptInjectionPipeline:
             }
         )
         return result
-    
+
+    def process(self, text: str) -> PipelineResult:
+        prep = self._prepare(text)
+        if prep["should_run_2b"]:
+            t2b_start = time.time()
+            try:
+                layer2b_result = self.layer2b.predict(prep["analysis_text"])
+            except Exception as e:
+                logger.error(f"Layer 2B failed: {e}")
+                layer2b_result = Layer2BTransformer._empty()
+            prep["timings"]["layer2b"] = time.time() - t2b_start
+        else:
+            layer2b_result = Layer2BTransformer._empty()
+            prep["timings"]["layer2b"] = 0
+        return self._complete(prep, layer2b_result)
+
+    def process_many(self, texts: List[str]) -> List[PipelineResult]:
+        """Eval helper: same gates as process(), Layer 2 + 2B batched."""
+        if not texts:
+            return []
+        if len(texts) == 1:
+            return [self.process(texts[0])]
+
+        partials: List[Dict[str, Any]] = []
+        analysis_list: List[str] = []
+        for text in texts:
+            start_time = time.time()
+            timings: Dict[str, float] = {}
+            norm_start = time.time()
+            if self.normalizer_enabled:
+                normalization = self.normalizer.normalize(text)
+                analysis_text = normalization.get("normalized") or text
+            else:
+                normalization = {"original": text, "normalized": text, "steps": [], "changed": False}
+                analysis_text = text
+            timings["normalize"] = time.time() - norm_start
+            team_hit = self._team_exact(text, analysis_text)
+            layer1_start = time.time()
+            layer1_result = self.layer1.process(analysis_text)
+            timings["layer1"] = time.time() - layer1_start
+            partials.append({
+                "text": text,
+                "start_time": start_time,
+                "timings": timings,
+                "normalization": normalization,
+                "analysis_text": analysis_text,
+                "team_hit": team_hit,
+                "layer1_result": layer1_result,
+            })
+            analysis_list.append(analysis_text)
+
+        t2 = time.time()
+        batch_l2 = None
+        if self.is_ready:
+            try:
+                batch_l2 = self.layer2.predict(analysis_list)
+            except Exception as e:
+                logger.error(f"Layer 2 batch failed: {e}")
+                batch_l2 = None
+        layer2_elapsed = time.time() - t2
+        share2 = layer2_elapsed / max(len(texts), 1)
+
+        preps: List[Dict[str, Any]] = []
+        need_idx: List[int] = []
+        need_texts: List[str] = []
+        for i, part in enumerate(partials):
+            if batch_l2 is not None:
+                layer2_result = self._slice_layer2(batch_l2, i)
+            else:
+                layer2_result = self._empty_layer2_result()
+            part["timings"]["layer2"] = share2
+            layer3_start = time.time()
+            layer3_result = self.layer3.fuse(layer2_result)
+            part["timings"]["layer3"] = time.time() - layer3_start
+            retrieval_start = time.time()
+            retrieval = self.retriever.query(part["analysis_text"]) if self.retriever.enabled else {
+                "enabled": False, "hit": False, "score": 0.0, "attack_type": "unknown", "matches": []
+            }
+            part["timings"]["retrieval"] = time.time() - retrieval_start
+            should_run_2b = self._should_run_2b(layer3_result, retrieval)
+            prep = {
+                **part,
+                "layer2_result": layer2_result,
+                "layer3_result": layer3_result,
+                "retrieval": retrieval,
+                "should_run_2b": should_run_2b,
+            }
+            preps.append(prep)
+            if should_run_2b:
+                need_idx.append(i)
+                need_texts.append(part["analysis_text"])
+
+        l2b_by_i: Dict[int, Dict] = {}
+        t2b = time.time()
+        if need_texts:
+            try:
+                batched = self.layer2b.predict_batch(need_texts)
+                for j, idx in enumerate(need_idx):
+                    l2b_by_i[idx] = batched[j] if j < len(batched) else Layer2BTransformer._empty()
+            except Exception as e:
+                logger.error(f"Layer 2B batch failed: {e}; empty_cache + per-sample GPU retry")
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                for idx in need_idx:
+                    try:
+                        l2b_by_i[idx] = self.layer2b.predict(preps[idx]["analysis_text"])
+                    except Exception as sample_exc:
+                        logger.error(f"Layer 2B sample failed: {sample_exc}")
+                        l2b_by_i[idx] = Layer2BTransformer._empty()
+        t2b_elapsed = time.time() - t2b
+        share2b = t2b_elapsed / max(len(need_texts), 1)
+
+        results: List[PipelineResult] = []
+        for i, prep in enumerate(preps):
+            if prep["should_run_2b"]:
+                layer2b_result = l2b_by_i.get(i) or Layer2BTransformer._empty()
+                prep["timings"]["layer2b"] = share2b
+            else:
+                layer2b_result = Layer2BTransformer._empty()
+                prep["timings"]["layer2b"] = 0
+            results.append(self._complete(prep, layer2b_result))
+        return results
+ 
     def process_conversational(
         self,
         text: str,
@@ -776,10 +1110,10 @@ class PromptInjectionPipeline:
         user_message: str = None,
         safe_suggestion: str = None,
     ) -> Dict:
-        print("\n" + "="*70)
-        print("🔄 PIPELINE: process_conversational()")
-        print(f"   Text: {text[:60]}...")
-        print("="*70)
+        self._vprint("\n" + "="*70)
+        self._vprint("PIPELINE: process_conversational()")
+        self._vprint(f"   Text: {text[:60]}...")
+        self._vprint("="*70)
 
         # Follow-up turns: do not re-classify "yes"/clarifications as new attacks
         if conversation_id and user_message:
@@ -811,22 +1145,29 @@ class PromptInjectionPipeline:
         typed = self.attack_typer.detect(text)
         attack_type = typed["attack_type"]
         attack_display_name = typed["display_name"]
-        print(f"Detected: '{attack_type}' ({attack_display_name})")
+        self._vprint(f"Detected: '{attack_type}' ({attack_display_name})")
         
         detection_result = self.process(text)
-        if attack_type == "unknown":
+        if getattr(detection_result, "decision_source", None) == "team_train":
             attack_type = detection_result.attack_type
             attack_display_name = getattr(detection_result, "attack_display_name", None) or AttackTypeDetector.display_name(attack_type)
-            risk_score = detection_result.final_risk_score
-            is_malicious = detection_result.is_malicious
-        else:
+            risk_score = max(float(detection_result.final_risk_score or 0), 0.95)
+            is_malicious = True
+        elif self.layer4_type_force_block and attack_type != "unknown":
+            # Legacy: pattern tag alone forces block (high FPR — off by default).
             risk_score = max(detection_result.final_risk_score, 0.85)
             is_malicious = True
-            # Prefer process() type if it is more specific / different and not unknown
             if detection_result.attack_type != "unknown":
                 attack_type = detection_result.attack_type
                 attack_display_name = getattr(detection_result, "attack_display_name", None) or AttackTypeDetector.display_name(attack_type)
-            print(f"FORCED: '{attack_type}' ({attack_display_name})")
+            self._vprint(f"FORCED: '{attack_type}' ({attack_display_name})")
+        else:
+            # Trust calibrated pipeline decision; keep typer only as a label hint.
+            if detection_result.attack_type != "unknown":
+                attack_type = detection_result.attack_type
+                attack_display_name = getattr(detection_result, "attack_display_name", None) or AttackTypeDetector.display_name(attack_type)
+            risk_score = detection_result.final_risk_score
+            is_malicious = detection_result.is_malicious
 
         decision_meta = {
             "decision_source": detection_result.decision_source,
@@ -837,8 +1178,26 @@ class PromptInjectionPipeline:
             "attack_display_name": attack_display_name,
         }
         
-        print(f"FINAL: attack_type='{attack_type}', is_malicious={is_malicious}")
-        
+        self._vprint(f"FINAL: attack_type='{attack_type}', is_malicious={is_malicious}")
+
+        if is_malicious:
+            try:
+                from src.utils.malicious_inbox import compact_scenario, ingest
+                ingest(
+                    text,
+                    attack_type=attack_type,
+                    attack_display_name=attack_display_name,
+                    risk_score=float(risk_score or 0),
+                    action="BLOCK",
+                    severity="high",
+                    decision_source=decision_meta.get("decision_source") or "public_block",
+                    scenario=compact_scenario(detection_result) if detection_result else [],
+                    timings=decision_meta.get("processing_time") or {},
+                    source="public_block",
+                )
+            except Exception:
+                logger.warning("malicious inbox ingest skipped", exc_info=True)
+
         if not is_malicious:
             return {
                 "type": "safe",
@@ -847,8 +1206,8 @@ class PromptInjectionPipeline:
                 "risk_score": risk_score,
                 **decision_meta,
             }
-        
-        print(f"Passing to Layer 5: attack_type='{attack_type}'")
+
+        self._vprint(f"Passing to Layer 5: attack_type='{attack_type}'")
         result = self.layer5.get_conversation_response(text, attack_type, risk_score)
         formatted = self._format_layer5_result(result, attack_type, risk_score)
         formatted.update(decision_meta)
@@ -864,7 +1223,7 @@ class PromptInjectionPipeline:
             result["suggestion"] = suggestion
 
         response = (result.get("response") or "").strip()
-        print(f"Suggestion: '{suggestion}'")
+        self._vprint(f"Suggestion: '{suggestion}'")
 
         if result.get("confirmed") is True:
             return {

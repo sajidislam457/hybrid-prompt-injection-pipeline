@@ -29,10 +29,21 @@ class Layer2Classifier:
         self.models = {}
         self.is_trained = False
     
-    def train(self, X_train: List[str], y_train: List[int]) -> Dict:
+    def train(
+        self,
+        X_train: List[str],
+        y_train: List[int],
+        sample_weight: Optional[List[float]] = None,
+        persist: bool = True,
+    ) -> Dict:
         logger.info("="*60)
         logger.info("LAYER 2: TRAINING")
         logger.info(f"Samples: {len(X_train)}")
+        if sample_weight is not None:
+            import numpy as np
+            w = np.asarray(sample_weight, dtype=float)
+            team_n = int((w > 1.0).sum())
+            logger.info(f"Team-weighted rows: {team_n} (max weight={float(w.max()):.1f})")
         logger.info("="*60)
         
         self.vectorizer = TfidfVectorizer(
@@ -47,6 +58,10 @@ class Layer2Classifier:
         X_train_vec = self.vectorizer.fit_transform(X_train)
         logger.info(f"Features: {X_train_vec.shape[1]}")
         
+        fit_kw = {}
+        if sample_weight is not None:
+            fit_kw["sample_weight"] = sample_weight
+        
         models = {
             'logistic': LogisticRegression(C=1.0, max_iter=1000, class_weight='balanced', random_state=42, n_jobs=-1),
             'random_forest': RandomForestClassifier(n_estimators=100, max_depth=10, class_weight='balanced', random_state=42, n_jobs=-1),
@@ -57,7 +72,7 @@ class Layer2Classifier:
         results = {}
         for name, model in models.items():
             try:
-                model.fit(X_train_vec, y_train)
+                model.fit(X_train_vec, y_train, **fit_kw)
                 self.models[name] = model
                 preds = model.predict(X_train_vec)
                 acc = accuracy_score(y_train, preds)
@@ -68,9 +83,53 @@ class Layer2Classifier:
                 logger.error(f"  {name} failed: {e}")
         
         self.is_trained = bool(self.models)
-        if self.is_trained:
+        if self.is_trained and persist:
             self.save()
         return results
+
+    def evaluate(self, X: List[str], y: List[int]) -> Dict:
+        """Held-out metrics for one split (used by StratifiedGroupKFold)."""
+        if not self.is_trained or not self.models:
+            return {"accuracy": 0.0, "f1": 0.0, "f1_binary": 0.0, "auc_roc": None, "n": len(y)}
+        out = self.predict(X)
+        preds = out.get("predictions") or [0] * len(y)
+        scores = out.get("risk_scores") or [0.0] * len(y)
+        acc = accuracy_score(y, preds)
+        f1 = f1_score(y, preds, average="weighted", zero_division=0)
+        f1_bin = f1_score(y, preds, average="binary", zero_division=0)
+        from sklearn.metrics import precision_score, recall_score
+        prec = precision_score(y, preds, zero_division=0)
+        rec = recall_score(y, preds, zero_division=0)
+        cm_tn = cm_fp = cm_fn = cm_tp = 0
+        for yt, yp in zip(y, preds):
+            if int(yt) == 1 and int(yp) == 1:
+                cm_tp += 1
+            elif int(yt) == 0 and int(yp) == 0:
+                cm_tn += 1
+            elif int(yt) == 0 and int(yp) == 1:
+                cm_fp += 1
+            else:
+                cm_fn += 1
+        auc = None
+        if len(set(int(v) for v in y)) > 1:
+            try:
+                from sklearn.metrics import roc_auc_score
+                auc = float(roc_auc_score(y, scores))
+            except Exception:
+                auc = None
+        return {
+            "accuracy": float(acc),
+            "precision": float(prec),
+            "recall": float(rec),
+            "f1": float(f1),
+            "f1_binary": float(f1_bin),
+            "fpr": float(cm_fp / (cm_fp + cm_tn)) if (cm_fp + cm_tn) else 0.0,
+            "auc_roc": auc,
+            "n": len(y),
+            "positives": int(sum(1 for v in y if int(v) == 1)),
+            "negatives": int(sum(1 for v in y if int(v) == 0)),
+            "confusion_matrix": {"tp": cm_tp, "tn": cm_tn, "fp": cm_fp, "fn": cm_fn},
+        }
     
     def predict(self, texts: List[str]) -> Dict:
         if not self.is_trained or not self.models:

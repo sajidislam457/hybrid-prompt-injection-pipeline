@@ -36,27 +36,53 @@ layers:
     enabled: true
     # Semantic upgrade: try HuggingFace Deberta; falls back to heuristic cues if unavailable
     use_transformers: true
+    # Live API device. Held-out/ablation override this via LAYER2B_DEVICE (see eval.auto_hw).
+    device: cpu
     model_name: protectai/deberta-v3-base-prompt-injection-v2
-    threshold: 0.55
-    gate_confidence_below: 0.75
+    # Harder malicious call — DeBERTa was owning ~27% of finals at 0.55.
+    threshold: 0.78
+    # Only run when Layer 3 is unsure (was 0.75 → almost always).
+    gate_confidence_below: 0.40
     run_on_ambiguous: true
+    # ALLOW→BLOCK disabled for paper precision: DeBERTa force-blocks were ~78% of FPs
+    # on benign story/code text. Soft merge still feeds AUC when Layer 3 is ambiguous.
+    override_min_risk: 1.01
+    enable_force_block: false
+    soft_merge: 0.85
+    soft_merge_only_ambiguous: true
   layer3:
     enabled: true
     weights:
-      logistic: 1.0
-      random_forest: 1.0
-      xgboost: 1.2
-      svm: 0.9
-    ambiguous_threshold: 0.65
-    confidence_threshold: 0.8
+      logistic: 1.3
+      svm: 1.3
+      xgboost: 0.4
+      random_forest: 0.3
+    # Escalate to L4 only when confidence/agreement fall below these.
+    ambiguous_confidence_below: 0.45
+    ambiguous_agreement_below: 0.45
+    # Operating point (tuned on val). Higher → fewer FPs, slight recall trade.
+    decision_threshold: 0.52
+    category_boost_scale: 0.25
+    category_boost_min_risk: 0.45
+    # Precision gate on weak ensemble blocks (beat FPR without type force-block).
+    # Val/probe: risks are bimodal; FPs sit in the high band — need a hard floor.
+    block_min_risk: 0.70
+    block_min_agreement: 0.70
+    strong_risk: 0.82
   layer4:
     enabled: true
     use_real_llm: false
     model: openai/gpt-4o-mini
     timeout_sec: 12
     max_calls_per_minute: 20
-    min_confidence_for_skip: 0.8
+    # Only escalate when Layer 3 is truly mid/low confidence (was 0.55 → ~22% L4).
+    min_confidence_for_skip: 0.40
     ambiguous_only: true
+    heuristic_block_threshold: 0.75
+    # L4 may ALLOW freely; may BLOCK only if ensemble/2b/retrieval agrees.
+    require_ensemble_corroboration: true
+    # Attack-type tags are labels only — never force a block by themselves.
+    type_force_block: false
   layer5:
     enabled: true
     intent_preserving: true
@@ -76,8 +102,11 @@ layers:
   retrieval:
     enabled: true
     bank_path: data/attack_bank.json
-    threshold: 0.42
+    # 0.42 matched benign text against noisy bank entries; 0.65 needs a real overlap.
+    threshold: 0.65
     top_k: 3
+    # Only a near-duplicate of a known attack may block on retrieval alone.
+    force_block_score: 0.85
   normalizer:
     enabled: true
 training:
@@ -86,11 +115,32 @@ training:
   batch_size: 8
   warmup_steps: 500
   early_stopping_patience: 2
+  # Lab / review_queue rows count this many times more during Layer 2 fit
+  team_sample_weight: 50
+  team_sources:
+    - review_queue
+    - team_train
+    - inbox_review
+    - inbox_manual
 data:
-  train_split: 0.7
-  val_split: 0.15
-  test_split: 0.15
+  # Paper protocol: 5-fold StratifiedGroupKFold (class rates + no group leakage).
+  # train/val/test jsonl are 3+1+1 folds from that partition (~60/20/20).
+  splitter: StratifiedGroupKFold
+  n_splits: 5
+  train_split: 0.6
+  val_split: 0.2
+  test_split: 0.2
   random_seed: 42
+# Held-out / ablation worker only. Does not change live chatbot scoring.
+eval:
+  auto_hw: true
+  # 0 = auto: keep 2 cores for Admin on this PC, give the rest to eval.
+  reserve_cpu_cores: 0
+  min_gpu_free_mb: 1800
+  cpu_thread_cap: 0
+  gpu_cpu_threads: 0
+  # GPU: Layer 2B DeBERTa batch 32 (paper-safe). empty_cache only if dedicated >= 3000 MB.
+  layer2b_batch_size: 32
 api:
   host: 0.0.0.0
   port: 8000

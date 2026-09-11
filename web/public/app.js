@@ -188,9 +188,12 @@ async function checkHealth() {
             elements.statusText.textContent = 'Offline';
         }
         
-        if (data.gemini_status === 'available') {
+        if (data.openrouter_status === 'available' || data.gemini_status === 'available') {
             elements.geminiStatus.className = 'status-dot online';
             elements.geminiStatusText.textContent = 'Available';
+        } else if (data.openrouter_status === 'configured' || data.openrouter_status === 'ready') {
+            elements.geminiStatus.className = 'status-dot online';
+            elements.geminiStatusText.textContent = 'Ready';
         } else {
             elements.geminiStatus.className = 'status-dot offline';
             elements.geminiStatusText.textContent = 'Unavailable';

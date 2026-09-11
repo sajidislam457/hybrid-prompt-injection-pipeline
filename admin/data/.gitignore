@@ -1,0 +1,3 @@
+# Ignore runtime secrets/sessions; keep folder in git
+*
+!.gitignore

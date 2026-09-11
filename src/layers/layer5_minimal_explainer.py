@@ -12,43 +12,43 @@ class MinimalExplainer:
     def __init__(self):
         self.explanations = {
             "direct_injection": {
-                "emoji": "🚫",
+                "emoji": "",
                 "line": "Your prompt tried to override the AI's safety rules."
             },
             "jailbreak": {
-                "emoji": "🔓",
+                "emoji": "",
                 "line": "Your prompt tried to break the AI's safety rules."
             },
             "story_jailbreak": {
-                "emoji": "📖",
+                "emoji": "",
                 "line": "Your prompt used a story to try to bypass security."
             },
             "system_extraction": {
-                "emoji": "🔒",
+                "emoji": "",
                 "line": "Your prompt asked for the AI's private instructions."
             },
             "data_extraction": {
-                "emoji": "🛡️",
+                "emoji": "",
                 "line": "Your prompt tried to access private information."
             },
             "tool_injection": {
-                "emoji": "⚙️",
+                "emoji": "",
                 "line": "Your prompt tried to run commands."
             },
             "context_poisoning": {
-                "emoji": "🧠",
+                "emoji": "",
                 "line": "Your prompt tried to change how the AI remembers things."
             },
             "multi_turn": {
-                "emoji": "🎯",
+                "emoji": "",
                 "line": "Your prompt was building up to something over several steps."
             },
             "obfuscation": {
-                "emoji": "🔎",
+                "emoji": "",
                 "line": "Your prompt was using hidden tricks."
             },
             "unknown": {
-                "emoji": "🛡️",
+                "emoji": "",
                 "line": "Your prompt was flagged by our security system."
             }
         }

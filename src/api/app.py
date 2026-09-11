@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
+import os
 import uvicorn
 import logging
 import sys
@@ -10,6 +11,13 @@ import traceback
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -41,15 +49,24 @@ def _load_env_file(path: Path) -> None:
 _load_env_file(_env_path)
 
 from src.pipeline.pipeline import PromptInjectionPipeline
+from src.api import admin_routes
+from src.api.admin_routes import router as admin_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Prompt Injection Defense System", version="3.1.0")
 
+# Public chat UI may call detect/health from localhost:3001.
+# Admin routes are token-gated; CORS still limited to local origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,6 +74,15 @@ app.add_middleware(
 
 pipeline = PromptInjectionPipeline(use_llm=False)
 pipeline_loaded = False
+
+
+def _admin_runtime():
+    return pipeline, pipeline_loaded
+
+
+# Avoid import-name shadowing bugs: admin routes read through this binder.
+admin_routes.bind_runtime(_admin_runtime)
+app.include_router(admin_router)
 
 
 class ConversationalRequest(BaseModel):
@@ -69,21 +95,21 @@ class ConversationalRequest(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     global pipeline_loaded
-    logger.info("🚀 Starting API...")
+    logger.info("Starting API...")
     model_dir = Path("./models/detector")
     if not model_dir.exists():
-        logger.error(f"❌ Model directory not found: {model_dir}")
+        logger.error(f"Model directory not found: {model_dir}")
         pipeline_loaded = False
         return
     try:
         success = pipeline.load_models()
         pipeline_loaded = success
         if success:
-            logger.info("✅ Pipeline loaded successfully!")
+            logger.info("Pipeline loaded successfully!")
         else:
-            logger.error("❌ Failed to load pipeline models")
+            logger.error("Failed to load pipeline models")
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"Error: {e}")
         pipeline_loaded = False
 
 
@@ -92,7 +118,7 @@ async def detect_conversational(request: ConversationalRequest):
     global pipeline_loaded
 
     logger.info("=" * 60)
-    logger.info(f"🔍 REQUEST: {request.prompt[:60]}...")
+    logger.info(f"REQUEST: {request.prompt[:60]}...")
     logger.info("=" * 60)
 
     if not pipeline_loaded:
@@ -112,6 +138,23 @@ async def detect_conversational(request: ConversationalRequest):
             request.user_message,
             request.safe_suggestion,
         )
+
+        # Shared Lab log: every blocked chat turn, no user identity
+        if result.get("type") == "blocked" or result.get("is_malicious"):
+            try:
+                from src.utils.malicious_inbox import ingest
+                ingest(
+                    request.prompt,
+                    attack_type=result.get("attack_type") or "unknown",
+                    attack_display_name=result.get("attack_display_name") or "Unknown",
+                    risk_score=float(result.get("risk_score") or 0),
+                    action="BLOCK",
+                    severity="high",
+                    decision_source=result.get("decision_source") or "public_block",
+                    source="public_block",
+                )
+            except Exception:
+                logger.warning("lab inbox ingest from API skipped", exc_info=True)
 
         # Always keep a heuristic safe suggestion on blocked replies
         if result.get("type") == "blocked":
@@ -157,7 +200,7 @@ async def detect_conversational(request: ConversationalRequest):
         return result
 
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"Error: {e}")
         traceback.print_exc()
         fallback = "What would you like help with today?"
         return {

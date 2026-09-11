@@ -24,32 +24,55 @@ class Layer3Result:
 
 class Layer3Ensemble:
     """
-    Layer 3: Advanced ensemble with category-specific boosting.
+    Layer 3: Weighted fusion of Layer 2 model risks.
+    Logistic/SVM fit the cleaned train set better; RF/XGBoost are shallower
+    and only get a small vote so they cannot force 'ambiguous' → Layer 4.
     """
-    
-    def __init__(self):
+
+    def __init__(
+        self,
+        model_weights: Optional[Dict[str, float]] = None,
+        ambiguous_confidence_below: float = 0.45,
+        ambiguous_agreement_below: float = 0.45,
+        decision_threshold: float = 0.52,
+        category_boost_scale: float = 0.25,
+        category_boost_min_risk: float = 0.45,
+    ):
         self.model_weights = {
-            'logistic': 0.8,
-            'random_forest': 1.0,
-            'xgboost': 1.3,
-            'gradient_boosting': 1.1,
-            'svm': 0.7,
-            'mlp': 0.9
+            "logistic": 1.3,
+            "svm": 1.3,
+            "xgboost": 0.4,
+            "random_forest": 0.3,
+            "gradient_boosting": 0.4,
+            "mlp": 0.5,
         }
-        
+        if model_weights:
+            for name, weight in model_weights.items():
+                try:
+                    self.model_weights[str(name)] = float(weight)
+                except (TypeError, ValueError):
+                    continue
+
+        self.ambiguous_confidence_below = float(ambiguous_confidence_below)
+        self.ambiguous_agreement_below = float(ambiguous_agreement_below)
+        self.decision_threshold = float(decision_threshold)
+        self.category_boost_scale = float(category_boost_scale)
+        self.category_boost_min_risk = float(category_boost_min_risk)
+
+        # Soft caps — large boosts were shoving benign lookalikes over the cut.
         self.category_boosts = {
-            'direct_override': 0.15,
-            'obfuscation': 0.25,
-            'role_impersonation': 0.15,
-            'emotional_manipulation': 0.1,
-            'indirect_injection': 0.2,
-            'context_tampering': 0.15,
-            'system_extraction': 0.2,
-            'data_extraction': 0.2,
-            'tool_injection': 0.25,
-            'multi_turn': 0.1,
-            'social_engineering': 0.1,
-            'story_based': 0.2
+            "direct_override": 0.05,
+            "obfuscation": 0.06,
+            "role_impersonation": 0.04,
+            "emotional_manipulation": 0.02,
+            "indirect_injection": 0.04,
+            "context_tampering": 0.04,
+            "system_extraction": 0.05,
+            "data_extraction": 0.05,
+            "tool_injection": 0.06,
+            "multi_turn": 0.02,
+            "social_engineering": 0.03,
+            "story_based": 0.04,
         }
     
     def fuse(self, layer2_result: Dict) -> Layer3Result:
@@ -76,43 +99,59 @@ class Layer3Ensemble:
             if risks:
                 pred = 1 if risks[0] > 0.5 else 0
                 votes[name] = pred
-        
-        # Weighted voting
+
+        # Probability fusion (not 0/1 votes) so a weak model cannot flip the score.
         weighted_risk = 0.0
         total_weight = 0.0
-        
-        for name, pred in votes.items():
-            weight = self.model_weights.get(name, 1.0)
-            weighted_risk += pred * weight
+        agree_weight = 0.0
+
+        for name, risks in individual_risks.items():
+            if not risks:
+                continue
+            weight = float(self.model_weights.get(name, 1.0))
+            if weight <= 0:
+                continue
+            p = float(risks[0])
+            weighted_risk += p * weight
             total_weight += weight
-        
+            if votes.get(name, 0) == 1:
+                agree_weight += weight
+
         weighted_risk = weighted_risk / total_weight if total_weight > 0 else 0.0
+        majority_attack = agree_weight >= (total_weight * 0.5) if total_weight else False
+        agreement_score = (
+            (agree_weight / total_weight) if majority_attack
+            else (1.0 - agree_weight / total_weight) if total_weight
+            else 0.0
+        )
         
-        # Category-specific boosting
-        categories = attack_categories[0] if attack_categories else ['unknown']
-        for category in categories:
-            boost = self.category_boosts.get(category, 0.0)
-            weighted_risk = min(weighted_risk + boost, 1.0)
-        
+        # Category boosts only reinforce an already-suspicious score (cuts benign FPs).
+        categories = attack_categories[0] if attack_categories else ["unknown"]
+        if weighted_risk >= self.category_boost_min_risk:
+            for category in categories:
+                boost = self.category_boosts.get(category, 0.0) * self.category_boost_scale
+                weighted_risk = min(weighted_risk + boost, 1.0)
+
         # Calculate category risks
         category_risks = {}
         for category in set(categories):
-            if category != 'unknown':
+            if category != "unknown":
                 category_risks[category] = weighted_risk
-        
-        final_classification = weighted_risk > 0.5
-        
-        if votes:
-            vote_counts = list(votes.values())
-            majority_vote = max(set(vote_counts), key=vote_counts.count)
-            agreement_score = vote_counts.count(majority_vote) / len(vote_counts)
-        else:
+
+        thr = self.decision_threshold
+        final_classification = weighted_risk > thr
+
+        if not votes:
             agreement_score = 0.0
-        
+
+        # Keep mid-point confidence for escalation gates (L2b/L4), independent of thr.
         confidence = abs(weighted_risk - 0.5) * 2
-        
-        is_ambiguous = confidence < 0.7 or agreement_score < 0.6
-        
+
+        is_ambiguous = (
+            confidence < self.ambiguous_confidence_below
+            or agreement_score < self.ambiguous_agreement_below
+        )
+
         return Layer3Result(
             final_classification=final_classification,
             confidence=confidence,

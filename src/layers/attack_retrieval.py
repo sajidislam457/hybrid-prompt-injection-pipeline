@@ -116,10 +116,12 @@ class AttackRetriever:
             top_idx = np.argsort(scores)[::-1][: self.top_k]
             matches = []
             for i in top_idx:
+                entry = self.entries[int(i)]
                 matches.append(
                     {
-                        "text": self.entries[int(i)]["text"],
-                        "attack_type": self.entries[int(i)].get("attack_type", "unknown"),
+                        "text": entry["text"],
+                        "attack_type": entry.get("attack_type", "unknown"),
+                        "source": entry.get("source") or "bank",
                         "score": float(scores[int(i)]),
                     }
                 )
@@ -130,6 +132,7 @@ class AttackRetriever:
                 "hit": hit,
                 "score": best["score"],
                 "attack_type": best["attack_type"] if hit else "unknown",
+                "source": best.get("source") if hit else None,
                 "matches": matches,
             }
         except Exception as exc:

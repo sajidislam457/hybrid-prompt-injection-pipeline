@@ -1,7 +1,10 @@
 """
-FastAPI Application
+FastAPI Application package.
+Note: do not bind `app` on this package in a way that breaks `import src.api.app`.
 """
 
-from .app import app
+from . import app as app_module
 
-__all__ = ['app']
+application = app_module.app
+
+__all__ = ["application", "app_module"]

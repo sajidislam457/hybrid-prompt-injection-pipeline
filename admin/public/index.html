@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureAI Admin — Research</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link rel="stylesheet" href="/theme/style.css">
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <div class="ambient" aria-hidden="true">
+        <canvas id="particle-canvas"></canvas>
+        <div class="orb orb-a"></div>
+        <div class="orb orb-b"></div>
+        <div class="orb orb-c"></div>
+        <div class="aurora a1"></div>
+        <div class="aurora a2"></div>
+        <div class="grid-fade"></div>
+        <div class="scan-beam"></div>
+        <div class="vignette"></div>
+    </div>
+
+    <div id="cursor-glow" aria-hidden="true"></div>
+
+    <div id="app">
+        <nav id="sidebar">
+            <button type="button" class="logo" id="logo-home" title="Home — defense flowchart">
+                <div class="logo-mark" aria-hidden="true">
+                    <span class="logo-ring"></span>
+                    <span class="logo-ring logo-ring-2"></span>
+                    <span class="material-icons">shield</span>
+                </div>
+                <div class="logo-copy">
+                    <span class="logo-text">SecureAI</span>
+                    <span class="logo-sub">Admin research</span>
+                </div>
+            </button>
+
+            <div class="nav-section">
+                <h3>Workspace</h3>
+                <ul>
+                    <li data-tab="lab">
+                        <span class="nav-ico"><span class="material-icons">biotech</span></span>
+                        <span>Lab</span>
+                        <span class="badge live-badge" id="lab-badge">Lab</span>
+                    </li>
+                    <li data-tab="accuracy">
+                        <span class="nav-ico"><span class="material-icons">query_stats</span></span>
+                        <span>Report</span>
+                    </li>
+                    <li data-tab="datasets">
+                        <span class="nav-ico"><span class="material-icons">dataset</span></span>
+                        <span>Datasets</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>System</h3>
+                <div id="system-status">
+                    <div class="status-item">
+                        <span class="status-dot" id="api-dot"></span>
+                        <span>API: <span id="api-text">Checking...</span></span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-dot" id="admin-dot"></span>
+                        <span>Admin API: <span id="admin-text">Checking...</span></span>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <main id="main-content">
+            <div id="welcome-tab" class="tab-content active">
+                <div class="fw-flow" id="fw-flow" aria-label="Defense scenario flowchart">
+                    <div class="fw-board">
+                        <div class="fw-scenario" id="fw-scenario">
+                            <span class="fw-scenario-tag" id="fw-scenario-tag">Scenario</span>
+                            <h3 class="fw-scenario-title" id="fw-scenario-title">Loading…</h3>
+                            <p class="fw-scenario-desc" id="fw-scenario-desc"></p>
+                        </div>
+
+                        <div class="fw-chart" id="fw-track">
+                            <div class="fw-cell fw-c-user" data-fw="user">
+                                <div class="fw-box">
+                                    <span class="material-icons">person</span>
+                                    <strong>User</strong>
+                                </div>
+                            </div>
+                            <div class="fw-cell fw-c-a0" data-fw-arrow="0" aria-hidden="true"><span class="fw-arr fw-arr-d"></span></div>
+
+                            <div class="fw-cell fw-c-l1" data-fw="l1">
+                                <div class="fw-box"><span class="fw-idx">L1</span><strong>Prefilter</strong></div>
+                            </div>
+                            <div class="fw-cell fw-c-a1" data-fw-arrow="1" aria-hidden="true"><span class="fw-arr fw-arr-r"></span></div>
+                            <div class="fw-cell fw-c-l2" data-fw="l2">
+                                <div class="fw-box"><span class="fw-idx">L2</span><strong>Classifiers</strong></div>
+                            </div>
+                            <div class="fw-cell fw-c-a2" data-fw-arrow="2" aria-hidden="true"><span class="fw-arr fw-arr-r"></span></div>
+                            <div class="fw-cell fw-c-l2b" data-fw="l2b">
+                                <div class="fw-box"><span class="fw-idx">L2b</span><strong>Transformer</strong></div>
+                            </div>
+
+                            <div class="fw-cell fw-c-a3" data-fw-arrow="3" aria-hidden="true"><span class="fw-arr fw-arr-d"></span></div>
+
+                            <div class="fw-cell fw-c-ret" data-fw="ret">
+                                <div class="fw-box"><span class="fw-idx">R</span><strong>Retrieval</strong></div>
+                            </div>
+                            <div class="fw-cell fw-c-a4" data-fw-arrow="4" aria-hidden="true"><span class="fw-arr fw-arr-r"></span></div>
+                            <div class="fw-cell fw-c-l3" data-fw="l3">
+                                <div class="fw-box"><span class="fw-idx">L3</span><strong>Ensemble</strong></div>
+                            </div>
+                            <div class="fw-cell fw-c-a5" data-fw-arrow="5" aria-hidden="true"><span class="fw-arr fw-arr-r"></span></div>
+                            <div class="fw-cell fw-c-l4" data-fw="l4">
+                                <div class="fw-box"><span class="fw-idx">L4</span><strong>Judge</strong></div>
+                            </div>
+
+                            <div class="fw-cell fw-c-a6" data-fw-arrow="6" aria-hidden="true"><span class="fw-arr fw-arr-d"></span></div>
+
+                            <div class="fw-end" aria-label="Final path">
+                                <div class="fw-cell" data-fw="l5">
+                                    <div class="fw-box"><span class="fw-idx">L5</span><strong>Intent</strong></div>
+                                </div>
+                                <div class="fw-cell" data-fw-arrow="7" aria-hidden="true"><span class="fw-arr fw-arr-r"></span></div>
+                                <div class="fw-cell" data-fw="llm">
+                                    <div class="fw-box fw-llm">
+                                        <span class="material-icons">psychology</span>
+                                        <strong>LLM</strong>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="fw-verdict" id="fw-verdict" aria-live="polite">
+                            <span id="fw-verdict-text">Watching scenarios…</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="lab-tab" class="tab-content">
+                <div class="analytics-header">
+                    <div>
+                        <h2><span class="title-shine">Lab</span></h2>
+                    </div>
+                    <button id="live-train" class="btn-primary" type="button">
+                        <span class="material-icons">model_training</span> Train
+                    </button>
+                </div>
+                <div id="live-train-progress" class="train-progress hidden" aria-live="polite">
+                    <div class="train-progress-head">
+                        <span class="train-progress-label-wrap">
+                            <span class="train-progress-pulse" aria-hidden="true"></span>
+                            <span id="live-train-label" class="train-progress-label">Training</span>
+                        </span>
+                        <span id="live-train-elapsed" class="train-progress-time">0:00</span>
+                    </div>
+                    <div class="train-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                        <div id="live-train-bar" class="train-progress-bar">
+                            <span class="train-progress-shine" aria-hidden="true"></span>
+                        </div>
+                    </div>
+                    <p id="live-train-status" class="train-progress-detail"></p>
+                </div>
+                <div class="live-switch">
+                    <button type="button" class="live-opt active" data-live="correct">Correct</button>
+                    <button type="button" class="live-opt" data-live="add">Add New</button>
+                </div>
+
+                <div id="live-correct" class="live-pane">
+                    <div class="correct-layout">
+                        <div class="log-panel">
+                            <div class="log-panel-head">
+                                <h3>Security log</h3>
+                            </div>
+                            <div id="inbox-list" class="log-table"></div>
+                        </div>
+                        <div class="panel admin-panel correct-panel">
+                            <h3>Correct this prompt</h3>
+                            <p class="analytics-subtitle" id="correct-meta">Click a log row, set type, then Train.</p>
+                            <pre id="correct-prompt" class="code-block case-prompt">No prompt selected.</pre>
+                            <label for="correct-type">Attack type</label>
+                            <select id="correct-type"></select>
+                            <label for="correct-class">Verdict</label>
+                            <select id="correct-class">
+                                <option value="1">Malicious</option>
+                                <option value="0">Safe</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="live-add" class="live-pane hidden">
+                    <div class="panel admin-panel add-panel">
+                        <h3>Add a new example</h3>
+                        <p class="analytics-subtitle">Type the prompt, set type, then Train. Use Check to see if it was already trained.</p>
+                        <label for="manual-prompt">Prompt</label>
+                        <textarea id="manual-prompt" rows="5" placeholder="Type the prompt"></textarea>
+                        <div class="add-lookup-row">
+                            <button id="add-lookup-btn" class="btn-secondary" type="button">
+                                <span class="material-icons">search</span> Check if trained
+                            </button>
+                            <div id="add-lookup-status" class="add-lookup-status" aria-live="polite"></div>
+                        </div>
+                        <label for="add-type">Attack type</label>
+                        <select id="add-type"></select>
+                        <label for="add-class">Verdict</label>
+                        <select id="add-class">
+                            <option value="1">Malicious</option>
+                            <option value="0">Safe</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div id="accuracy-tab" class="tab-content">
+                <div class="analytics-header">
+                    <div>
+                        <h2><span class="title-shine">Report</span></h2>
+                    </div>
+                </div>
+
+                <div id="acc-run-progress" class="train-progress hidden" aria-live="polite">
+                    <div class="train-progress-head">
+                        <span class="train-progress-label-wrap">
+                            <span class="train-progress-pulse" aria-hidden="true"></span>
+                            <span id="acc-run-label" class="train-progress-label">Evaluating</span>
+                        </span>
+                        <span id="acc-run-elapsed" class="train-progress-time">0:00</span>
+                    </div>
+                    <div class="train-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                        <div id="acc-run-bar" class="train-progress-bar">
+                            <span class="train-progress-shine" aria-hidden="true"></span>
+                        </div>
+                    </div>
+                    <p id="acc-run-detail" class="train-progress-detail"></p>
+                </div>
+
+                <div class="panel admin-panel acc-panel">
+                    <h3 class="acc-section-title">Choose what to measure</h3>
+                    <div class="acc-mode-grid" role="radiogroup" aria-label="Evaluation type">
+                        <label class="acc-mode-card is-selected">
+                            <input type="radio" name="acc-mode-radio" value="heldout" checked>
+                            <strong>Main test (held-out)</strong>
+                            <p>Score on a fixed labeled test set the model never trained on.</p>
+                        </label>
+                        <label class="acc-mode-card">
+                            <input type="radio" name="acc-mode-radio" value="ablation">
+                            <strong>Which layers help? (ablation)</strong>
+                            <p>Same test, but turn layers off one by one. Shows what each part contributes.</p>
+                        </label>
+                        <label class="acc-mode-card">
+                            <input type="radio" name="acc-mode-radio" value="cv">
+                            <strong>5-fold stratified group CV</strong>
+                            <p>Paper protocol: keep class balance and keep the same group out of train and validation.</p>
+                        </label>
+                    </div>
+                    <select id="acc-mode" class="hidden" aria-hidden="true">
+                        <option value="heldout" selected>heldout</option>
+                        <option value="ablation">ablation</option>
+                        <option value="cv">cv</option>
+                    </select>
+
+                    <div class="row-actions acc-run-row">
+                        <button id="acc-run" class="btn-primary" type="button">
+                            <span class="material-icons">science</span> Run this evaluation
+                        </button>
+                        <button id="acc-cancel" class="btn-secondary hidden" type="button" title="Stop the current evaluation" aria-hidden="true">
+                            <span class="material-icons">stop</span> Cancel
+                        </button>
+                        <p id="acc-run-hint" class="acc-help">Uses the full held-out test set. Stay on this page.</p>
+                    </div>
+                    <div id="acc-job-status" class="acc-job-status" aria-live="polite">
+                        <span class="acc-job-dot"></span>
+                        <span id="acc-job-text">No evaluation running yet.</span>
+                    </div>
+                    <pre id="acc-status" class="hidden" aria-hidden="true">No job yet.</pre>
+                </div>
+
+                <div class="panel admin-panel acc-panel">
+                    <h3 class="acc-section-title">Results</h3>
+                    <div id="acc-results" class="acc-results">
+                        <div class="acc-empty">Run an evaluation above to see scores and tables.</div>
+                    </div>
+                </div>
+
+                <div class="panel admin-panel acc-panel">
+                    <h3 class="acc-section-title">Past reports</h3>
+                    <div id="acc-reports" class="acc-reports"></div>
+                </div>
+            </div>
+
+            <div id="datasets-tab" class="tab-content">
+                <div class="analytics-header">
+                    <div>
+                        <h2><span class="title-shine">Datasets</span></h2>
+                        <p class="analytics-subtitle" id="ds-train-count">Train rows: —</p>
+                        <p class="analytics-subtitle">Upload adds training rows only. Val and test stay in data/processed and are never overwritten.</p>
+                    </div>
+                    <button id="ds-train" class="btn-primary" type="button">
+                        <span class="material-icons">model_training</span> Train
+                    </button>
+                </div>
+
+                <div id="ds-train-progress" class="train-progress hidden" aria-live="polite">
+                    <div class="train-progress-head">
+                        <span class="train-progress-label-wrap">
+                            <span class="train-progress-pulse" aria-hidden="true"></span>
+                            <span id="ds-train-label" class="train-progress-label">Working</span>
+                        </span>
+                        <span id="ds-train-elapsed" class="train-progress-time">0:00</span>
+                    </div>
+                    <div class="train-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                        <div id="ds-train-bar" class="train-progress-bar">
+                            <span class="train-progress-shine" aria-hidden="true"></span>
+                        </div>
+                    </div>
+                    <p id="ds-train-status" class="train-progress-detail"></p>
+                </div>
+
+                <div class="panel admin-panel">
+                    <label for="ds-file">Dataset file (.jsonl / .csv)</label>
+                    <input id="ds-file" type="file" accept=".jsonl,.json,.csv,.txt">
+                    <div class="row-actions">
+                        <button id="ds-upload" class="btn-primary" type="button">
+                            <span class="material-icons">upload</span> Upload
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
